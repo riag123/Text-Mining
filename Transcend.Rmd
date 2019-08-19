@@ -1,0 +1,149 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+**Part 1**
+```{r}
+library(readr)
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+
+elec_reviews = read_csv("~/Downloads/OIDD 245/electronics_downsample.csv")
+elec_reviews2 = filter(elec_reviews, str_detect(elec_reviews$reviewText, "\\bsd\\b|\\bSD\\b"))
+elec_reviews2 %>% group_by(asin)
+counted_asin = count(elec_reviews2, asin)
+arrange(counted_asin, desc(n))
+```
+**Part 2**
+
+This is the average overall star rating. 4.49 is pretty high, showing that people rate these products very highly.
+```{r}
+#only keep top 3 ASINs
+elec_reviews_filtered = filter(elec_reviews, asin == "B007WTAJTO" | asin == "B002WE6D44" | asin == "B000VX6XL6") 
+
+# average overall stars
+stars = mean(elec_reviews_filtered$overall)
+stars
+```
+
+
+These are the average sentiment scores. Reviews are positive, but not overwhelmingly.
+```{r}
+library(syuzhet)
+#splitting by ASIN 
+review_T = elec_reviews_filtered[which(elec_reviews_filtered$asin == "B007WTAJTO"),]
+review_W = elec_reviews_filtered[which(elec_reviews_filtered$asin == "B002WE6D44"),]
+review_M = elec_reviews_filtered[which(elec_reviews_filtered$asin == "B000VX6XL6"),]
+
+#Get sentiment scores using the syuzhet method
+review_T$sentiment_score = get_sentiment(review_T$reviewText, method = "syuzhet")
+review_W$sentiment_score = get_sentiment(review_W$reviewText, method = "syuzhet")
+review_M$sentiment_score = get_sentiment(review_M$reviewText, method = "syuzhet")
+
+#Compute average sentiment score
+asin1_mean = mean(review_T$sentiment_score)
+asin2_mean = mean(review_W$sentiment_score)
+asin3_mean = mean(review_M$sentiment_score)
+asin1_mean
+asin2_mean
+asin3_mean
+```
+
+**Part 3**
+```{r}
+library(tm)
+
+#Creating text corpuses
+input = elec_reviews_filtered$reviewText
+vec = VectorSource(input)
+corp = VCorpus(vec)
+
+#Cleaning reviews
+corp2 = tm_map(corp, removePunctuation)
+corp2 = tm_map(corp2, removeNumbers)
+corp2 = tm_map(corp2, content_transformer(removeWords), stopwords("english"), lazy = TRUE)
+corp2 = tm_map(corp2, content_transformer(tolower), lazy = TRUE)
+corp2 = tm_map(corp2, stripWhitespace)
+
+#Generate Document-term Matrix
+dtm = DocumentTermMatrix(corp2)
+m = as.matrix(dtm)
+
+#Remove sparse terms - 294 words
+dtms = removeSparseTerms(dtm, .9845)
+m2 = as.matrix(dtms)
+
+#Correlations
+cor_w_stars = cor(elec_reviews_filtered$overall, m2)
+row.names(cor_w_stars) = c("corr")
+cor_w_stars = t(cor_w_stars)
+cor_w_stars = as.data.frame(cor_w_stars)
+cor_w_stars$word <- row.names(cor_w_stars)
+cor_w_stars = arrange(cor_w_stars, desc(corr))
+
+#Top and Bottom 30
+top_30 = head(cor_w_stars, 30)
+bottom_30 = tail(cor_w_stars, 30)
+
+library(wordcloud)
+
+#Wordclouds
+f = top_30$corr
+twc = wordcloud(top_30$word, freq = f, scale = c(4.3, 0.1), colors = c("chartreuse", "cornflowerblue", "darkorange"))
+g = bottom_30$corr
+bwc = wordcloud(bottom_30$word, freq = -g, scale = c(2.0, 0.1), colors = c("chartreuse", "cornflowerblue", "darkorange"))
+```
+
+
+**Part 4**
+```{r}
+#Features used: Capital letters adjusted for review length and length of review
+
+#Create binary variable for helpful reviews
+elec_reviews$h_new = str_sub(elec_reviews$helpful, 2, 2)
+elec_reviews$h_new = elec_reviews$h_new >= 1
+elec_reviews$h_new = as.numeric(elec_reviews$h_new)
+
+library(syuzhet)
+
+# ** Length of Review Feature **
+elec_reviews$length = str_length(elec_reviews$reviewText)
+elec_reviews$lengthF = as.numeric(str_length(elec_reviews$length) > median(str_length(elec_reviews$length)))
+
+# ** Capital Letters adjusted for review length Feature **
+elec_reviews$reviewText = str_remove(elec_reviews$reviewText, "\\bSD\\b||SD")
+elec_reviews$capLetter = str_count(elec_reviews$reviewText, "[:upper:]")
+elec_reviews$div = elec_reviews$capLetter / elec_reviews$length
+elec_reviews$divF = as.numeric(elec_reviews$div > median(elec_reviews$div))
+
+```
+
+
+
+The following model is 64.37% accurate. I got this accuracy after playing around with different features, such as sentiment score, presence of the top 30 words, and base number of capital letters. Out of these features, this is the best accuracy I could get. 
+
+```{r}
+#Create training and testing dataset
+elec_reviews_train = elec_reviews[1:(0.8*nrow(elec_reviews)),]
+elec_reviews_test = elec_reviews[-(1:(0.8*nrow(elec_reviews))),]
+
+#Build predictive model - based on training data
+model = glm(data = elec_reviews_train, h_new ~ divF + length, family = binomial)
+summary(model)
+
+#Test model on testing data
+elec_reviews_test$outcome = predict(model, elec_reviews_test, type="response")
+
+#Threshold
+elec_reviews_test$outcome = as.numeric(elec_reviews_test$outcome >= .60)
+
+#Accuracy
+mean(elec_reviews_test$h_new == elec_reviews_test$outcome)
+
+```
